@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Joy</string>
+    <string name="joy_a11y_description">Joy 需要无障碍权限以截取屏幕、读取聊天窗口并填入回复。声明为无障碍工具以便在 Android 13+ 上完整读取微信界面。不会收集密码。</string>
+</resources>
