@@ -31,6 +31,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.joy.android.data.AppMode
 import com.joy.android.data.ImageCaptureMode
 import com.joy.android.data.JoySettings
 import com.joy.android.overlay.OverlayController
@@ -45,6 +46,7 @@ fun SettingsScreen(
     onOpenModelSettings: () -> Unit,
     onOpenImageSettings: () -> Unit,
     onOpenPersonaSettings: () -> Unit,
+    onOpenGroupBotSettings: () -> Unit,
 ) {
     val context = LocalContext.current
     val settings by viewModel.settings.collectAsStateWithLifecycle()
@@ -95,6 +97,14 @@ fun SettingsScreen(
         ?.trim()
         ?.let { if (it.length > 36) it.take(36) + "…" else it }
         ?: "未设置"
+    val groupBotSummary = buildString {
+        val nick = settings.groupBotNickname.trim().ifEmpty { "未设昵称" }
+        append(nick)
+        append(" · ")
+        append(settings.groupBotGender.label)
+        append(" · ")
+        append(settings.groupBotTemper.label)
+    }
 
     Scaffold(
         topBar = {
@@ -140,12 +150,21 @@ fun SettingsScreen(
                 icon = { Icon(Icons.Outlined.ImageSearch, contentDescription = null) },
                 onClick = onOpenImageSettings,
             )
-            SettingsMenuCard(
-                title = "回复人设",
-                summary = personaSummary,
-                icon = { Icon(Icons.Outlined.Psychology, contentDescription = null) },
-                onClick = onOpenPersonaSettings,
-            )
+            if (settings.appMode == AppMode.ASSISTANT) {
+                SettingsMenuCard(
+                    title = "回复人设",
+                    summary = personaSummary,
+                    icon = { Icon(Icons.Outlined.Psychology, contentDescription = null) },
+                    onClick = onOpenPersonaSettings,
+                )
+            } else {
+                SettingsMenuCard(
+                    title = "群 Bot 配置",
+                    summary = groupBotSummary,
+                    icon = { Icon(Icons.Outlined.Psychology, contentDescription = null) },
+                    onClick = onOpenGroupBotSettings,
+                )
+            }
         }
     }
 }

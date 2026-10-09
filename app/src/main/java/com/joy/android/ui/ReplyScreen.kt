@@ -79,6 +79,13 @@ fun ReplyScreen(
                 .verticalScroll(rememberScrollState()),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            AppModeSwitcher(
+                mode = settings.appMode,
+                enabled = !busy,
+                onModeChange = { mode ->
+                    viewModel.saveSettings(settings.copy(appMode = mode))
+                },
+            )
             Card(
                 modifier = Modifier
                     .fillMaxWidth()

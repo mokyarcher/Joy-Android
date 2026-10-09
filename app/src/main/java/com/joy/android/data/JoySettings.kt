@@ -6,6 +6,19 @@ data class JoySettings(
     val apiKey: String = "",
     val model: String = DEFAULT_MODEL,
     val systemPrompt: String = DEFAULT_SYSTEM_PROMPT,
+    /** 首页产品模式：回复助手 / 群 Bot（布局与配置分叉） */
+    val appMode: AppMode = AppMode.ASSISTANT,
+    /** 群 Bot：微信昵称，用于识别 @ */
+    val groupBotNickname: String = "",
+    val groupBotGender: GroupBotGender = GroupBotGender.UNSPECIFIED,
+    val groupBotTemper: GroupBotTemper = GroupBotTemper.MILD,
+    val groupBotProfession: String = "",
+    /** 群 Bot 人设长文（与助手 systemPrompt 隔离） */
+    val groupBotPersona: String = DEFAULT_GROUP_BOT_PERSONA,
+    /** 仅被 @ 时响应 */
+    val groupBotRequireAt: Boolean = true,
+    /** 两次回复最短间隔（秒） */
+    val groupBotCooldownSec: Int = 8,
     /** 选图识聊天：默认视觉（群聊角色更稳）；可切本地 OCR */
     val imageCaptureMode: ImageCaptureMode = ImageCaptureMode.VISION,
     /** 视觉通道服务商（可与回复不同） */
@@ -45,6 +58,9 @@ data class JoySettings(
         const val DEFAULT_SYSTEM_PROMPT =
             "你是微信聊天副驾。根据对话上下文，给出1～2条可直接发送的短回复。" +
                 "口语、自然、别官腔；不要解释、不要编号标题；每条回复单独一行。"
+        const val DEFAULT_GROUP_BOT_PERSONA =
+            "你是微信群里的 AI 助手小号。被 @ 时用一两句口语回复，自然、有分寸；" +
+                "不要长篇大论，不要暴露自己是程序，除非有人直接问。"
         const val DEFAULT_OVERLAY_CORE_COLOR = 0xFF64B5F6.toInt()
         const val DEFAULT_OVERLAY_SATELLITE_COLOR = 0
     }

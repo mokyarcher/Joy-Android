@@ -89,10 +89,11 @@ fun ImageSettingsScreen(
             Text(
                 text = when (imageCaptureMode) {
                     ImageCaptureMode.VISION ->
-                        "推荐。看图判左右更稳（含群聊）。慢主要在上传+模型；" +
-                            "可试智谱免费 glm-4.6v-flash，或商汤 6.7-flash-lite。"
+                        "回复助手推荐。看图判左右更稳。慢主要在上传+模型。" +
+                            "群 Bot 悬浮球固定用本地 OCR 筛 @，不走视觉（省 token）。"
                     ImageCaptureMode.OCR ->
-                        "本地快、不耗 API；群聊长绿泡容易把「我」判成「对方」，仅作备用。"
+                        "本地快、不耗 API。群 Bot 本来就用 OCR 筛 @；" +
+                            "助手模式下群聊长绿泡可能把「我」判成「对方」。"
                 },
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

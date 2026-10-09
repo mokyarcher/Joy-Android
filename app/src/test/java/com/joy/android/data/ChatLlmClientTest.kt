@@ -151,4 +151,16 @@ class ChatLlmClientTest {
         assertEquals("https://api.deepseek.com", shared.resolvedVisionBaseUrl())
         assertEquals("reply-key", shared.resolvedVisionApiKey())
     }
+
+    @Test
+    fun authorizationHeaderUsesBasicForUserPassword() {
+        val h = ChatLlmClient.authorizationHeader("ollama:secret")
+        assertTrue(h.startsWith("Basic "))
+        assertEquals(
+            "Basic " + java.util.Base64.getEncoder()
+                .encodeToString("ollama:secret".toByteArray(Charsets.UTF_8)),
+            h,
+        )
+        assertEquals("Bearer sk-abc", ChatLlmClient.authorizationHeader("sk-abc"))
+    }
 }

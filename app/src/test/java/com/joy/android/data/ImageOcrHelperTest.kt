@@ -252,6 +252,112 @@ class ImageOcrHelperTest {
     }
 
     @Test
+    fun leftGroupNickForcedOtherNotMe() {
+        // logcat: 贴左短串「Moky」「红师傅」曾被绿底误判成 ME
+        assertEquals(
+            OcrSide.OTHER,
+            OcrChatFormatter.assignSide(
+                line("Moky", left = 0.164f, top = 0.627f, right = 0.231f, bottom = 0.640f),
+            ),
+        )
+        assertEquals(
+            OcrSide.OTHER,
+            OcrChatFormatter.assignSide(
+                line("红师傅", left = 0.163f, top = 0.199f, right = 0.247f, bottom = 0.212f),
+            ),
+        )
+        assertTrue(
+            OcrChatFormatter.isLeftGroupNickname(
+                line("Moky", left = 0.164f, top = 0.627f, right = 0.231f, bottom = 0.640f),
+            ),
+        )
+    }
+
+    @Test
+    fun groupBotAttachesNickFromLogcatLayout() {
+        // 复现 14:54：贴左昵称 + 短 @ 灰泡（长泡无底色时易与绿泡几何难分，单测用短泡）
+        val lines = listOf(
+            line("红师傅", left = 0.163f, top = 0.199f, right = 0.247f, bottom = 0.212f),
+            line("@豆姐请出示健康码", left = 0.190f, top = 0.231f, right = 0.55f, bottom = 0.250f),
+            line("Moky", left = 0.164f, top = 0.627f, right = 0.231f, bottom = 0.640f),
+            line("@豆姐你好", left = 0.189f, top = 0.655f, right = 0.417f, bottom = 0.677f),
+            line("Moky", left = 0.165f, top = 0.783f, right = 0.231f, bottom = 0.795f),
+            line("@豆姐说话", left = 0.189f, top = 0.811f, right = 0.419f, bottom = 0.832f),
+            line("来啦来啦", left = 0.72f, top = 0.869f, right = 0.88f, bottom = 0.890f),
+        )
+        val out = OcrChatFormatter.format(lines, retainGroupNicknames = true)
+        assertTrue("红师傅: $out", out.contains("对方·红师傅："))
+        assertTrue("健康码: $out", out.contains("健康码") || out.contains("@豆姐请出示"))
+        assertTrue("Moky@你好: $out", out.contains("对方·Moky：@豆姐你好"))
+        assertTrue("Moky@说话: $out", out.contains("对方·Moky：@豆姐说话"))
+        assertFalse("nick must not be 我: $out", out.contains("我：Moky"))
+        assertFalse(out.contains("我：红师傅"))
+    }
+
+    @Test
+    fun lockNickRecoversMisclassifiedMeNick() {
+        val merged = OcrChatFormatter.lockNickFromLineAbove(
+            listOf("我：Moky", "对方：@豆姐说话"),
+        )
+        assertEquals(listOf("对方·Moky：@豆姐说话"), merged)
+    }
+
+    @Test
+    fun groupBotKeepsTinyNickAboveAtBubble() {
+        // 昵称框只有聊天字号的 ~45%，旧逻辑会当嵌图丢掉，且要求「下一行明显更高」
+        val lines = listOf(
+            line("汤恒宇", left = 0.14f, top = 0.40f, right = 0.30f, bottom = 0.418f),
+            line("@豆姐 你状态比昨天差多了", left = 0.14f, top = 0.445f, right = 0.58f, bottom = 0.485f),
+            line("来了", left = 0.72f, top = 0.54f, right = 0.88f, bottom = 0.58f),
+        )
+        val out = OcrChatFormatter.format(lines, retainGroupNicknames = true)
+        assertTrue("expected nick attach: $out", out.contains("对方·汤恒宇："))
+        assertTrue(out.contains("@豆姐"))
+        assertFalse(out.lines().any { it == "对方：汤恒宇" })
+    }
+
+    @Test
+    fun groupBotDoesNotStickPreviousNickOntoLaterAt() {
+        val lines = listOf(
+            line("Moky", left = 0.14f, top = 0.28f, right = 0.28f, bottom = 0.30f),
+            line("先聊着", left = 0.14f, top = 0.32f, right = 0.36f, bottom = 0.36f),
+            line("汤恒宇", left = 0.14f, top = 0.48f, right = 0.30f, bottom = 0.50f),
+            line("@豆姐 在吗", left = 0.14f, top = 0.52f, right = 0.48f, bottom = 0.56f),
+        )
+        val out = OcrChatFormatter.format(lines, retainGroupNicknames = true)
+        assertTrue("wrong person: $out", out.contains("对方·汤恒宇：@豆姐 在吗"))
+        assertFalse("Moky must not own the @: $out", out.contains("对方·Moky：@豆姐"))
+    }
+
+    @Test
+    fun groupBotLocksNickFromLineImmediatelyAbove() {
+        // 间距大到几何挂不上时，仍按「气泡上一行 = 昵称」锁定
+        val lines = listOf(
+            line("汤恒宇", left = 0.14f, top = 0.38f, right = 0.30f, bottom = 0.40f),
+            line("@豆姐 在吗", left = 0.14f, top = 0.50f, right = 0.48f, bottom = 0.54f),
+        )
+        val out = OcrChatFormatter.format(lines, retainGroupNicknames = true)
+        assertTrue("line-above lock: $out", out.contains("对方·汤恒宇：@豆姐 在吗"))
+        val merged = OcrChatFormatter.lockNickFromLineAbove(
+            listOf("对方：汤恒宇", "对方：@豆姐 在吗"),
+        )
+        assertEquals(listOf("对方·汤恒宇：@豆姐 在吗"), merged)
+    }
+
+    @Test
+    fun groupBotKeepsNickNearTopOfChatArea() {
+        val lines = listOf(
+            line("胡亮", left = 0.14f, top = 0.072f, right = 0.26f, bottom = 0.092f),
+            line("@豆姐 帮看看", left = 0.14f, top = 0.11f, right = 0.50f, bottom = 0.15f),
+        )
+        assertFalse(
+            OcrChatFormatter.isNoise(lines[0], retainGroupNicknames = true),
+        )
+        val out = OcrChatFormatter.format(lines, retainGroupNicknames = true)
+        assertTrue("top nick: $out", out.contains("对方·胡亮："))
+    }
+
+    @Test
     fun dropsVoiceButtonParensAsJunk() {
         // 底栏左侧语音键声波 → OCR 成 ()，旧逻辑会变成「对方：()」
         assertTrue(

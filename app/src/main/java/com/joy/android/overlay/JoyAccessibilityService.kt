@@ -21,6 +21,7 @@ import android.view.Display
 import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.view.accessibility.AccessibilityWindowInfo
+import com.joy.android.data.GroupBotMention
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.resume
@@ -159,10 +160,301 @@ class JoyAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastWechatTreeNodes: Int = 0
 
+    /**
+     * 智驾发送：**整次流程只点一次**「发送」。
+     * 发出后绿钮立刻变成「+」，任何第二次底栏点击都会拉开相册面板——所以禁止重试、禁止收起。
+     */
     suspend fun clickSend(): Boolean = withContext(Dispatchers.Main) {
-        delay(200)
-        val send = findSendButton() ?: return@withContext false
-        send.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        performClickSendOnce()
+    }
+
+    private suspend fun performClickSendOnce(): Boolean {
+        Log.i(TAG, "clickSendOnce start fillLen=${lastFillText.length} tree=$lastWechatTreeNodes")
+        delay(420)
+
+        if (inputLooksClearedAfterSend()) {
+            Log.i(TAG, "clickSendOnce already cleared")
+            return true
+        }
+
+        // 1) 优先点无障碍「发送」节点（仅一次）
+        val send = findSendButton()
+        if (send != null) {
+            Log.i(TAG, "clickSendOnce node ${describe(send)}")
+            val tapped = clickNodeOrAncestor(send) || run {
+                val r = Rect()
+                send.getBoundsInScreen(r)
+                r.width() >= 8 && r.height() >= 8 &&
+                    dispatchTap(r.centerX().toFloat(), r.centerY().toFloat())
+            }
+            if (tapped) {
+                delay(400)
+                val ok = inputLooksClearedAfterSend()
+                Log.i(TAG, "clickSendOnce node done cleared=$ok — stop (no 2nd tap)")
+                // 不论验清是否成功都结束：再点就是「+」
+                return true
+            }
+        } else {
+            Log.i(TAG, "clickSendOnce no send node")
+        }
+
+        // 2) 无节点：右下角绿钮只点一下（0.91W×0.968H）
+        val ok = tapSendButtonOnce()
+        Log.i(TAG, "clickSendOnce gesture done ok=$ok — stop")
+        return ok
+    }
+
+    /**
+     * 发送后收起底栏：软键盘 **或** 微信「+」面板（相册/拍摄…）。
+     * 旧逻辑只认 IME，面板开着就直接 skip，于是卡在你这张图的状态。
+     *
+     * 仅在检测到键盘/面板时才 Back，避免退回会话列表。
+     */
+    suspend fun dismissSoftKeyboard() = collapseChatBottomChrome()
+
+    suspend fun collapseChatBottomChrome() = withContext(Dispatchers.Main) {
+        val ime0 = imeWindowBounds() != null
+        val panel0 = isWechatExtraPanelOpen()
+        Log.i(TAG, "collapseChrome start ime=$ime0 panel=$panel0")
+
+        // 1) 有键盘或「+」面板 → Back 只收层，不退聊天
+        if (ime0 || panel0) {
+            if (performGlobalAction(GLOBAL_ACTION_BACK)) {
+                delay(320)
+                val ime1 = imeWindowBounds() != null
+                val panel1 = isWechatExtraPanelOpen()
+                Log.i(TAG, "collapseChrome after BACK ime=$ime1 panel=$panel1")
+                if (!ime1 && !panel1) return@withContext
+            }
+        }
+
+        // 2) 「+」仍开着 → 再点一次「+」关掉（微信 toggle）
+        if (isWechatExtraPanelOpen()) {
+            if (tapWechatPlusButton()) {
+                delay(300)
+                if (!isWechatExtraPanelOpen() && imeWindowBounds() == null) {
+                    Log.i(TAG, "collapseChrome OK via + toggle")
+                    return@withContext
+                }
+            }
+        }
+
+        // 3) 左下角 ∨（用户红框 ≈ 0.087W × 0.966H）
+        if (imeWindowBounds() != null || isWechatExtraPanelOpen()) {
+            tapBottomLeftCollapseChevron()
+            delay(280)
+            if (imeWindowBounds() == null && !isWechatExtraPanelOpen()) {
+                Log.i(TAG, "collapseChrome OK via bottom-left V")
+                return@withContext
+            }
+        }
+
+        // 4) 点聊天区空白失焦
+        if (imeWindowBounds() != null || isWechatExtraPanelOpen()) {
+            val (sw, sh) = screenSize()
+            Log.i(TAG, "collapseChrome tap chat blank")
+            dispatchTap(sw * 0.42f, sh * 0.32f)
+            delay(250)
+            if (imeWindowBounds() != null || isWechatExtraPanelOpen()) {
+                performGlobalAction(GLOBAL_ACTION_BACK)
+                delay(250)
+            }
+        }
+        Log.i(
+            TAG,
+            "collapseChrome done ime=${imeWindowBounds() != null} panel=${isWechatExtraPanelOpen()}",
+        )
+    }
+
+    /** 微信「+」展开的功能面板（相册/拍摄/红包…） */
+    private fun isWechatExtraPanelOpen(): Boolean {
+        val markers = listOf("相册", "拍摄", "红包", "转账", "位置")
+        var hits = 0
+        for (root in wechatRoots()) {
+            for (m in markers) {
+                val found = runCatching {
+                    root.findAccessibilityNodeInfosByText(m)?.isNotEmpty() == true
+                }.getOrDefault(false)
+                if (found) hits++
+            }
+        }
+        return hits >= 2
+    }
+
+    private suspend fun tapWechatPlusButton(): Boolean {
+        for (root in wechatRoots()) {
+            val plus = findPlusButton(root)
+            if (plus != null) {
+                Log.i(TAG, "tapWechatPlus node ${describe(plus)}")
+                if (clickNodeOrAncestor(plus)) return true
+                val r = Rect()
+                plus.getBoundsInScreen(r)
+                if (r.width() >= 8) {
+                    return dispatchTap(r.centerX().toFloat(), r.centerY().toFloat())
+                }
+            }
+        }
+        // 输入栏右侧「+」常见位置（面板已开时输入条被顶到约 0.58～0.65H）
+        val (w, h) = screenSize()
+        val guesses = listOf(
+            w * 0.93f to h * 0.60f,
+            w * 0.93f to h * 0.55f,
+            w * 0.93f to h * 0.88f,
+        )
+        for ((x, y) in guesses) {
+            Log.i(TAG, "tapWechatPlus guess ($x,$y)")
+            if (dispatchTap(x, y)) {
+                delay(120)
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun findPlusButton(root: AccessibilityNodeInfo): AccessibilityNodeInfo? {
+        var hit: AccessibilityNodeInfo? = null
+        walkAll(root) { n ->
+            if (hit != null) return@walkAll
+            val d = n.contentDescription?.toString().orEmpty()
+            val t = n.text?.toString().orEmpty()
+            val id = n.viewIdResourceName.orEmpty()
+            val label = "$d $t $id"
+            val looksPlus =
+                d == "+" || t == "+" ||
+                    label.contains("更多", true) ||
+                    id.contains("plus", true) ||
+                    id.contains("more", true) ||
+                    (label.contains("＋") && n.isClickable)
+            if (!looksPlus || !n.isClickable) return@walkAll
+            val r = Rect()
+            n.getBoundsInScreen(r)
+            val (sw, sh) = screenSize()
+            // 输入栏右侧小圆钮，排除面板里的大图标
+            if (r.centerX() < sw * 0.75f) return@walkAll
+            if (r.width() > sw * 0.2f || r.height() > sh * 0.1f) return@walkAll
+            hit = AccessibilityNodeInfo.obtain(n)
+        }
+        return hit
+    }
+
+    private suspend fun tapBottomLeftCollapseChevron() {
+        val (sw, sh) = screenSize()
+        // 用户两张原图红框中心：≈ (0.087W, 0.966H)
+        val points = listOf(
+            sw * 0.087f to sh * 0.966f,
+            sw * 0.075f to sh * 0.960f,
+            sw * 0.100f to sh * 0.972f,
+        )
+        for ((x, y) in points) {
+            Log.i(TAG, "tapBottomLeftV ($x,$y)")
+            dispatchTap(x, y)
+            delay(120)
+        }
+    }
+
+    private fun imeWindowBounds(): Rect? {
+        val wins = runCatching { windows }.getOrNull().orEmpty()
+        for (w in wins) {
+            if (w.type != AccessibilityWindowInfo.TYPE_INPUT_METHOD) continue
+            val r = Rect()
+            w.getBoundsInScreen(r)
+            if (r.width() > 0 && r.height() > 0) return r
+        }
+        return null
+    }
+
+    private fun clickHideKeyboardNode(): Boolean {
+        val roots = mutableListOf<AccessibilityNodeInfo>()
+        runCatching { windows }.getOrNull().orEmpty().forEach { w ->
+            runCatching { w.root }.getOrNull()?.let { roots += it }
+        }
+        rootInActiveWindow?.let { root ->
+            if (roots.none { it == root }) roots += root
+        }
+        val keywords = listOf(
+            "收起", "隐藏键盘", "关闭键盘", "收起键盘",
+            "Hide keyboard", "Dismiss", "collapse",
+        )
+        for (root in roots) {
+            for (kw in keywords) {
+                findNodeByText(root, kw)?.let { node ->
+                    if (clickNodeOrAncestor(node)) return true
+                }
+            }
+            if (clickHideKeyboardByDesc(root)) return true
+        }
+        return false
+    }
+
+    private fun clickHideKeyboardByDesc(root: AccessibilityNodeInfo): Boolean {
+        var hit: AccessibilityNodeInfo? = null
+        walkAll(root) { n ->
+            if (hit != null) return@walkAll
+            val d = n.contentDescription?.toString().orEmpty()
+            val t = n.text?.toString().orEmpty()
+            val label = "$d $t"
+            if (label.contains("收起") ||
+                label.contains("隐藏键盘") ||
+                label.contains("Hide keyboard", ignoreCase = true) ||
+                label.contains("关闭键盘")
+            ) {
+                hit = AccessibilityNodeInfo.obtain(n)
+            }
+        }
+        val node = hit ?: return false
+        return clickNodeOrAncestor(node)
+    }
+
+    /** 点节点本身；失败则沿父链找可点节点（微信「发送」文字常在不可点子节点上）。 */
+    private fun clickNodeOrAncestor(node: AccessibilityNodeInfo): Boolean {
+        var cur: AccessibilityNodeInfo? = node
+        var depth = 0
+        while (cur != null && depth < 6) {
+            if (cur.isClickable) {
+                if (cur.performAction(AccessibilityNodeInfo.ACTION_CLICK)) {
+                    Log.i(TAG, "clicked depth=$depth ${describe(cur)}")
+                    return true
+                }
+            }
+            val parent = cur.parent
+            if (cur !== node) cur.recycle()
+            cur = parent
+            depth++
+        }
+        cur?.let { if (it !== node) it.recycle() }
+        return false
+    }
+
+    private fun inputLooksClearedAfterSend(): Boolean {
+        val expected = lastFillText.trim()
+        if (expected.isEmpty()) return false
+        val edit = findChatInput() ?: return false
+        edit.refresh()
+        val now = edit.text?.toString().orEmpty().trim()
+        if (now.isEmpty()) return true
+        val head = expected.take(16)
+        return !now.contains(head) && !head.contains(now.take(16))
+    }
+
+    /**
+     * 无键盘时绿钮中心 ≈ (0.91W, 0.968H)。**只 dispatch 一次**，绝不连点。
+     */
+    private suspend fun tapSendButtonOnce(): Boolean {
+        val (w, h) = screenSize()
+        val ime = imeWindowBounds()
+        val (x, y) = if (ime != null) {
+            val barY = (ime.top - h * 0.028f).coerceAtLeast(h * 0.45f)
+            w * 0.92f to barY
+        } else {
+            w * 0.91f to h * 0.968f
+        }
+        Log.i(TAG, "tapSendOnce ($x,$y) ime=${ime != null}")
+        if (!dispatchTap(x, y)) return false
+        delay(400)
+        if (inputLooksClearedAfterSend()) return true
+        // 树被封时验不清：已点过绿钮位即结束，禁止再点
+        Log.i(TAG, "tapSendOnce done (verify inconclusive, no retry)")
+        return true
     }
 
     /** 写入后读取节点文本，确认真的进去了。 */
@@ -317,6 +609,57 @@ class JoyAccessibilityService : AccessibilityService() {
             walkAll(child, visit)
             child.recycle()
         }
+    }
+
+    /**
+     * 从无障碍树猜「刚 @ Bot」那条气泡上方的群昵称。
+     * 微信常屏蔽节点，失败则返回 null（调用方回退 OCR）。
+     */
+    fun findAtSenderNickname(botNickname: String): String? {
+        val nick = botNickname.trim()
+        if (nick.isEmpty()) return null
+        val roots = wechatRoots().ifEmpty { return null }
+        data class NodeBox(val text: String, val bounds: Rect)
+        val boxes = mutableListOf<NodeBox>()
+        for (root in roots) {
+            walkAll(root) { n ->
+                val t = n.text?.toString()?.trim().orEmpty()
+                if (t.isEmpty()) return@walkAll
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                if (r.width() < 4 || r.height() < 4) return@walkAll
+                boxes += NodeBox(t, Rect(r))
+            }
+        }
+        if (boxes.isEmpty()) {
+            Log.i("JoyGroupBot", "a11y sender: tree empty")
+            return null
+        }
+        // 找含 @Bot 的节点（偏下方更新的优先）
+        val atHits = boxes.filter { GroupBotMention.containsAtMention(it.text, nick) }
+        val atHit = atHits.maxByOrNull { it.bounds.bottom }
+        if (atHit == null) {
+            Log.i(
+                "JoyGroupBot",
+                "a11y sender: no @$nick node (nodes=${boxes.size} sample=${boxes.takeLast(6).joinToString { it.text.take(16) }})",
+            )
+            return null
+        }
+        // 在其上方、偏左的短文本 ≈ 群昵称
+        val candidates = boxes.filter { b ->
+            if (b.bounds.bottom > atHit.bounds.top + 8) return@filter false
+            if (b.bounds.centerX() > atHit.bounds.centerX() + 40) return@filter false
+            val gap = atHit.bounds.top - b.bounds.bottom
+            if (gap < -20 || gap > 120) return@filter false
+            GroupBotMention.isPlausibleGroupNick(b.text)
+        }
+        val best = candidates.maxByOrNull { it.bounds.bottom }
+        Log.i(
+            "JoyGroupBot",
+            "a11y sender at='${atHit.text.take(24)}' nick=${best?.text} " +
+                "cands=${candidates.joinToString { it.text }}",
+        )
+        return best?.text?.trim()
     }
 
     private fun findChatInput(): AccessibilityNodeInfo? {
@@ -608,30 +951,70 @@ class JoyAccessibilityService : AccessibilityService() {
         val roots = wechatRoots().ifEmpty { collectRoots() }
         val hits = mutableListOf<AccessibilityNodeInfo>()
         for (root in roots) {
+            for (id in WECHAT_SEND_IDS) {
+                runCatching {
+                    root.findAccessibilityNodeInfosByViewId(id)?.forEach {
+                        hits += AccessibilityNodeInfo.obtain(it)
+                    }
+                }
+            }
+            for (word in listOf("发送", "Send")) {
+                runCatching {
+                    root.findAccessibilityNodeInfosByText(word)?.forEach { n ->
+                        val t = n.text?.toString().orEmpty()
+                        val d = n.contentDescription?.toString().orEmpty()
+                        if (t == word || d == word || t.contains(word) || d.contains(word)) {
+                            hits += AccessibilityNodeInfo.obtain(n)
+                        }
+                    }
+                }
+            }
             collectSendLike(root, hits)
         }
-        if (hits.isEmpty()) return null
-        return hits.maxByOrNull { node ->
+        val (sw, sh) = screenSize()
+        val usable = hits.filter { n ->
             val r = Rect()
-            node.getBoundsInScreen(r)
-            var s = r.bottom
-            if (node.packageName?.toString() == WECHAT_PKG) s += 10_000
-            s
+            n.getBoundsInScreen(r)
+            r.width() >= 8 && r.height() >= 8 &&
+                r.bottom >= (sh * 0.72f).toInt() &&
+                r.centerX() >= (sw * 0.55f).toInt()
         }
+        val pool = usable.ifEmpty { hits }
+        if (pool.isEmpty()) return null
+        return pool.maxByOrNull { scoreSend(it) }
     }
 
-    private fun collectSendLike(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>) {
+    private fun scoreSend(node: AccessibilityNodeInfo): Int {
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        val (sw, sh) = screenSize()
+        var s = r.bottom + r.centerX() / 4
+        if (node.packageName?.toString() == WECHAT_PKG) s += 10_000
+        if (node.isClickable) s += 3_000
         val label = buildString {
             append(node.text ?: "")
             append(node.contentDescription ?: "")
-            append(node.viewIdResourceName ?: "")
         }
-        if (node.isClickable && (
-                label.contains("发送") ||
-                    label.contains("Send", ignoreCase = true) ||
-                    (node.viewIdResourceName?.contains("send", ignoreCase = true) == true)
-                )
-        ) {
+        if (label.contains("发送") || label.equals("Send", ignoreCase = true)) s += 5_000
+        val id = node.viewIdResourceName.orEmpty()
+        if (id.contains("send", ignoreCase = true)) s += 4_000
+        // 贴底偏右
+        if (r.bottom > sh * 0.88f) s += 2_000
+        if (r.centerX() > sw * 0.75f) s += 1_500
+        return s
+    }
+
+    private fun collectSendLike(node: AccessibilityNodeInfo, out: MutableList<AccessibilityNodeInfo>) {
+        val text = node.text?.toString().orEmpty()
+        val desc = node.contentDescription?.toString().orEmpty()
+        val id = node.viewIdResourceName.orEmpty()
+        val hit =
+            text.contains("发送") ||
+                desc.contains("发送") ||
+                text.equals("Send", ignoreCase = true) ||
+                desc.contains("Send", ignoreCase = true) ||
+                id.contains("send", ignoreCase = true)
+        if (hit) {
             out += AccessibilityNodeInfo.obtain(node)
         }
         for (i in 0 until node.childCount) {
@@ -654,6 +1037,16 @@ class JoyAccessibilityService : AccessibilityService() {
             "com.tencent.mm:id/ok",
             "com.tencent.mm:id/aqe",
             "com.tencent.mm:id/aja",
+        )
+
+        /** 常见发送按钮 id（随版本变化） */
+        private val WECHAT_SEND_IDS = listOf(
+            "com.tencent.mm:id/bql",
+            "com.tencent.mm:id/bqn",
+            "com.tencent.mm:id/send_btn",
+            "com.tencent.mm:id/chatting_send_btn",
+            "com.tencent.mm:id/anv",
+            "com.tencent.mm:id/b2b",
         )
 
         private val instanceRef = AtomicReference<JoyAccessibilityService?>(null)

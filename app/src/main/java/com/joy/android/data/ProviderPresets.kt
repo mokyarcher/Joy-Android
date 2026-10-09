@@ -104,7 +104,9 @@ object ProviderPresets {
             name = "自定义",
             baseUrl = "",
             defaultModel = "",
-            notes = "自行填写 Base URL / Model",
+            notes = "自行填写 Base URL / Model。" +
+                "自建 Ollama：Base 填 http://主机:端口/v1，" +
+                "API Key 填 user:password（Basic，与 curl -u 相同），Model 填 ollama 模型名。",
         ),
     )
 

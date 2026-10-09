@@ -8,6 +8,8 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.IOException
+import java.nio.charset.StandardCharsets
+import java.util.Base64
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicReference
 
@@ -82,12 +84,26 @@ class ChatLlmClient(
         }
     }
 
-    fun generateReplies(settings: JoySettings, chatText: String): List<String> {
+    fun generateReplies(
+        settings: JoySettings,
+        chatText: String,
+        systemPromptOverride: String? = null,
+        userPromptOverride: String? = null,
+    ): List<String> {
         val base = settings.baseUrl.trim().trimEnd('/')
         require(base.isNotEmpty()) { "请先在设置里填写 Base URL" }
         require(settings.apiKey.isNotBlank()) { "请先在设置里填写 API Key" }
         require(settings.model.isNotBlank()) { "请先在设置里填写 Model" }
         require(chatText.isNotBlank()) { "请先粘贴聊天内容" }
+
+        val system = systemPromptOverride?.trim()?.takeIf { it.isNotEmpty() }
+            ?: settings.systemPrompt
+        val user = userPromptOverride?.trim()?.takeIf { it.isNotEmpty() }
+            ?: (
+                "下面是微信聊天摘录。行首「对方：」是对面说的，「我：」是我方已发。" +
+                    "请站在「我」的立场，给出1～2条可直接发送的短回复，每条独占一行：\n\n" +
+                    chatText.trim()
+                )
 
         val url = chatCompletionsUrl(base)
         val body = JSONObject()
@@ -99,17 +115,12 @@ class ChatLlmClient(
                     .put(
                         JSONObject()
                             .put("role", "system")
-                            .put("content", settings.systemPrompt),
+                            .put("content", system),
                     )
                     .put(
                         JSONObject()
                             .put("role", "user")
-                            .put(
-                                "content",
-                                "下面是微信聊天摘录。行首「对方：」是对面说的，「我：」是我方已发。" +
-                                    "请站在「我」的立场，给出1～2条可直接发送的短回复，每条独占一行：\n\n" +
-                                    chatText.trim(),
-                            ),
+                            .put("content", user),
                     ),
             )
         applySpeedFlags(body, settings.model.trim(), base)
@@ -176,6 +187,7 @@ class ChatLlmClient(
                 baseUrl = base,
                 extraHint = extraHint,
                 applySpeed = true,
+                groupBot = settings.appMode == AppMode.GROUP_BOT,
             )
             try {
                 val result = postChat(url, apiKey, body)
@@ -206,6 +218,7 @@ class ChatLlmClient(
                             baseUrl = base,
                             extraHint = extraHint,
                             applySpeed = false,
+                            groupBot = settings.appMode == AppMode.GROUP_BOT,
                         )
                         val result = postChat(url, apiKey, body2)
                         val raw = stripThinkTags(result.outputText).trim()
@@ -234,9 +247,10 @@ class ChatLlmClient(
         baseUrl: String,
         extraHint: String,
         applySpeed: Boolean,
+        groupBot: Boolean,
     ): JSONObject {
         val prompt = buildString {
-            append(buildVisionExtractPrompt(policy))
+            append(buildVisionExtractPrompt(policy, groupBot = groupBot))
             if (extraHint.isNotBlank()) {
                 append("\n")
                 append(extraHint)
@@ -298,7 +312,7 @@ class ChatLlmClient(
     private fun postChat(url: String, apiKey: String, body: JSONObject): ChatResult {
         val request = Request.Builder()
             .url(url)
-            .header("Authorization", "Bearer ${apiKey.trim()}")
+            .header("Authorization", authorizationHeader(apiKey))
             .header("Content-Type", "application/json")
             .post(body.toString().toRequestBody(JSON_MEDIA))
             .build()
@@ -359,6 +373,25 @@ class ChatLlmClient(
 
         private fun chatCompletionsUrl(base: String): String =
             if (base.endsWith("/chat/completions")) base else "$base/chat/completions"
+
+        /**
+         * - `user:password` → HTTP Basic（Ollama / nginx 反代常用，对齐 curl -u）
+         * - 其它 → Bearer（商汤/智谱/DeepSeek 等）
+         */
+        fun authorizationHeader(apiKey: String): String {
+            val key = apiKey.trim()
+            val colon = key.indexOf(':')
+            // 排除 sk-xxx: 之类；仅当左侧像用户名（无空格、不太长）时用 Basic
+            if (colon in 1..64) {
+                val user = key.substring(0, colon)
+                if (' ' !in user && !user.startsWith("sk-", ignoreCase = true)) {
+                    val token = Base64.getEncoder()
+                        .encodeToString(key.toByteArray(StandardCharsets.UTF_8))
+                    return "Basic $token"
+                }
+            }
+            return "Bearer $key"
+        }
 
         fun shouldDisableLongReasoning(model: String, baseUrl: String): Boolean {
             val blob = "$model $baseUrl".lowercase()
@@ -462,7 +495,10 @@ class ChatLlmClient(
         fun stripThinkTags(raw: String): String =
             THINK_TAG_RE.replace(raw, "").trim()
 
-        fun buildVisionExtractPrompt(policy: VisionImagePolicy): String {
+        fun buildVisionExtractPrompt(
+            policy: VisionImagePolicy,
+            groupBot: Boolean = false,
+        ): String {
             val imageRule = when (policy) {
                 VisionImagePolicy.IGNORE ->
                     "聊天中的照片/表情包/嵌套截图气泡：整条跳过，不要输出，也不要OCR图内文字。"
@@ -478,13 +514,23 @@ class ChatLlmClient(
                 append("这是一张微信聊天截图。\n")
                 append("第一行必须写：会话对象：<顶栏聊天对象昵称>（电脑端在窗口左上，手机端在顶栏中间；")
                 append("看不清就写「会话对象：」空着）。\n")
-                append("然后提取聊天气泡。忽略：状态栏、时间条、输入栏、Tab、表情选择面板、群成员昵称小字。\n")
+                if (groupBot) {
+                    append("然后提取聊天气泡。忽略：状态栏、时间条、输入栏、Tab、表情选择面板。\n")
+                    append("群聊左侧气泡上方的成员昵称要保留到角色标签里。\n")
+                } else {
+                    append("然后提取聊天气泡。忽略：状态栏、时间条、输入栏、Tab、表情选择面板、群成员昵称小字。\n")
+                }
                 append(imageRule)
                 append('\n')
                 append("角色（群聊也一样）：右侧绿泡=「我」，左侧白/灰泡=「对方」。")
                 append("长绿泡会向左撑开，仍算「我」，不要当成对方。\n")
                 append("气泡按从上到下输出，每行严格：\n")
-                append("对方：...\n")
+                if (groupBot) {
+                    append("对方·成员昵称：...\n")
+                    append("（看不清昵称就写「对方：...」；正文里的 @某人 必须原样保留）\n")
+                } else {
+                    append("对方：...\n")
+                }
                 append("或\n")
                 append("我：...\n")
                 append("不要解释、不要编号。除「会话对象：」行外不要其它前缀。")
@@ -523,7 +569,8 @@ class ChatLlmClient(
                 .filter { it.isNotEmpty() }
                 .map { line ->
                     when {
-                        line.startsWith("对方：") || line.startsWith("我：") -> line
+                        line.startsWith("对方·") || line.startsWith("对方･") ||
+                            line.startsWith("对方：") || line.startsWith("我：") -> line
                         line.startsWith("对方:") -> "对方：" + line.removePrefix("对方:").trim()
                         line.startsWith("我:") -> "我：" + line.removePrefix("我:").trim()
                         else -> line

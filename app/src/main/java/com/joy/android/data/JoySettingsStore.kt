@@ -20,6 +20,14 @@ class JoySettingsStore(private val context: Context) {
         val apiKey = stringPreferencesKey("api_key")
         val model = stringPreferencesKey("model")
         val systemPrompt = stringPreferencesKey("system_prompt")
+        val appMode = stringPreferencesKey("app_mode")
+        val groupBotNickname = stringPreferencesKey("group_bot_nickname")
+        val groupBotGender = stringPreferencesKey("group_bot_gender")
+        val groupBotTemper = stringPreferencesKey("group_bot_temper")
+        val groupBotProfession = stringPreferencesKey("group_bot_profession")
+        val groupBotPersona = stringPreferencesKey("group_bot_persona")
+        val groupBotRequireAt = booleanPreferencesKey("group_bot_require_at")
+        val groupBotCooldownSec = intPreferencesKey("group_bot_cooldown_sec")
         val imageCaptureMode = stringPreferencesKey("image_capture_mode")
         val visionPresetId = stringPreferencesKey("vision_preset_id")
         val visionBaseUrl = stringPreferencesKey("vision_base_url")
@@ -64,6 +72,15 @@ class JoySettingsStore(private val context: Context) {
             apiKey = prefs[Keys.apiKey] ?: "",
             model = model,
             systemPrompt = prefs[Keys.systemPrompt] ?: JoySettings.DEFAULT_SYSTEM_PROMPT,
+            appMode = AppMode.fromId(prefs[Keys.appMode]),
+            groupBotNickname = prefs[Keys.groupBotNickname] ?: "",
+            groupBotGender = GroupBotGender.fromId(prefs[Keys.groupBotGender]),
+            groupBotTemper = GroupBotTemper.fromId(prefs[Keys.groupBotTemper]),
+            groupBotProfession = prefs[Keys.groupBotProfession] ?: "",
+            groupBotPersona = prefs[Keys.groupBotPersona]
+                ?: JoySettings.DEFAULT_GROUP_BOT_PERSONA,
+            groupBotRequireAt = prefs[Keys.groupBotRequireAt] ?: true,
+            groupBotCooldownSec = (prefs[Keys.groupBotCooldownSec] ?: 8).coerceIn(0, 600),
             imageCaptureMode = ImageCaptureMode.fromId(prefs[Keys.imageCaptureMode]),
             visionPresetId = visionPresetId,
             visionBaseUrl = visionBaseUrl,
@@ -87,6 +104,16 @@ class JoySettingsStore(private val context: Context) {
             prefs[Keys.systemPrompt] = settings.systemPrompt.trim().ifEmpty {
                 JoySettings.DEFAULT_SYSTEM_PROMPT
             }
+            prefs[Keys.appMode] = settings.appMode.id
+            prefs[Keys.groupBotNickname] = settings.groupBotNickname.trim()
+            prefs[Keys.groupBotGender] = settings.groupBotGender.id
+            prefs[Keys.groupBotTemper] = settings.groupBotTemper.id
+            prefs[Keys.groupBotProfession] = settings.groupBotProfession.trim()
+            prefs[Keys.groupBotPersona] = settings.groupBotPersona.trim().ifEmpty {
+                JoySettings.DEFAULT_GROUP_BOT_PERSONA
+            }
+            prefs[Keys.groupBotRequireAt] = settings.groupBotRequireAt
+            prefs[Keys.groupBotCooldownSec] = settings.groupBotCooldownSec.coerceIn(0, 600)
             prefs[Keys.imageCaptureMode] = settings.imageCaptureMode.id
             prefs[Keys.visionPresetId] = settings.visionPresetId.trim()
                 .ifEmpty { JoySettings.DEFAULT_VISION_PRESET_ID }

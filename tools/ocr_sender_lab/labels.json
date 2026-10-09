@@ -1,0 +1,12 @@
+{
+  "botNickname": "豆姐",
+  "cases": [
+    {
+      "id": "example_placeholder",
+      "file": "PUT_YOUR_SCREENSHOT.png",
+      "expectedSender": "Moky",
+      "triggerContains": "@豆姐",
+      "notes": "示例：换成真实文件名后删除本条或改掉 id"
+    }
+  ]
+}

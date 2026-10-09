@@ -318,7 +318,7 @@ class JoyOverlayService : LifecycleService(), SavedStateRegistryOwner {
             }
             ui = ui.copy(busyHint = null)
             refreshSessionTitle()
-            if (result.message != "画面未变，跳过") {
+            if (!OverlayAssistEngine.shouldQuietSkip(result.message, mode)) {
                 toast(result.message)
             }
         }
@@ -331,17 +331,25 @@ class JoyOverlayService : LifecycleService(), SavedStateRegistryOwner {
         autoWatchJob = lifecycleScope.launch {
             delay(1_200)
             while (isActive) {
-                if (assistJob?.isActive != true && ui.busyHint == null) {
-                    // 无障碍未开时不要空转弹错刷屏
-                    if (JoyAccessibilityService.instance == null) {
-                        toast("自动/智驾需要开启 Joy 无障碍")
-                        delay(AUTO_WATCH_INTERVAL_MS * 3)
-                        continue
-                    }
+                // 与手动解析共用 assistJob，避免两路并发各回一条
+                if (assistJob?.isActive == true) {
+                    delay(AUTO_WATCH_INTERVAL_MS)
+                    continue
+                }
+                if (JoyAccessibilityService.instance == null) {
+                    toast("自动/智驾需要开启 Joy 无障碍")
+                    delay(AUTO_WATCH_INTERVAL_MS * 3)
+                    continue
+                }
+                val watchMode = ui.mode
+                if (watchMode != OverlayAssistMode.AUTO && watchMode != OverlayAssistMode.PILOT) {
+                    break
+                }
+                assistJob = lifecycleScope.launch {
                     ui = ui.copy(busyHint = "截屏")
                     val result = try {
                         assistEngine.run(
-                            mode = mode,
+                            mode = watchMode,
                             action = OverlayAssistAction.PARSE_AND_REPLY,
                             hideOverlay = {
                                 withContext(Dispatchers.Main) {
@@ -370,10 +378,14 @@ class JoyOverlayService : LifecycleService(), SavedStateRegistryOwner {
                     refreshSessionTitle()
                     if (result.ok && result.reply != null) {
                         toast(result.message)
-                    } else if (!result.ok && result.message != "画面未变，跳过") {
+                    } else if (
+                        !result.ok &&
+                        !OverlayAssistEngine.shouldQuietSkip(result.message, watchMode)
+                    ) {
                         toast(result.message)
                     }
                 }
+                assistJob?.join()
                 delay(AUTO_WATCH_INTERVAL_MS)
             }
         }
